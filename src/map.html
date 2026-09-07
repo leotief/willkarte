@@ -101,14 +101,15 @@
          same apparent size on a 1080p screen and a scaled 4K one. The vw term only
          bites on a genuinely small window, where 500px would crowd the map out. */
       .wk-pop {
-        width: min(500px, 40vw);
+        width: min(650px, 52vw);
         position: relative; /* anchors the Merkliste star in the white strip */
       }
-      /* Fixed height: every popup is the same size, whether or not a listing has an
-         address. The address itself is clipped to one line. */
+      /* Fixed height so every popup is the same size (address clipped to one line).
+         Icons are centred in this box; the body is its positioning context. */
       .wk-pop-body {
-        padding: 11px 15px 12px;
-        height: 100px;
+        position: relative;
+        padding: 8px 15px 8px;
+        height: 90px;
         box-sizing: border-box;
         overflow: hidden;
       }
@@ -119,7 +120,7 @@
       }
       .wk-figure-img {
         display: block;
-        height: min(330px, 36vh); /* same idea as the width */
+        height: min(430px, 47vh); /* same idea as the width */
         background: #eee;
       }
       .wk-figure-img a,
@@ -157,11 +158,35 @@
         line-height: 1.4;
         font-weight: 400;
         color: #7a8291;
-        margin-top: 3px;
+        margin-top: 2px;
         padding-right: 40px; /* clear of the star */
         white-space: nowrap; /* one line — willhaben addresses can be very long */
         overflow: hidden;
         text-overflow: ellipsis;
+      }
+      /* Availability ("Verfügbar: …"): just another item on the specs line, so it
+         shares the specs' baseline exactly. Same font as the specs, distinct colour,
+         with a "·" divider before it. Fetched lazily on popup open (loading = dots).
+         :empty (no availability / not yet requested empty) drops the divider. */
+      .wk-pop .wk-pop-availrow {
+        font-size: 14px;
+        font-weight: 600;
+        color: #9aa0ad; /* lighter grey than the specs (#555) — set apart, not louder */
+      }
+      .wk-pop .wk-pop-availrow:not(:empty)::before {
+        content: "·";
+        margin: 0 7px;
+        color: #555; /* match the specs divider */
+      }
+      /* Loading state: three dots that cycle in place of the value. */
+      .wk-pop .wk-avail-dots::after {
+        content: "";
+        animation: wk-avail-dots 1.2s steps(1, end) infinite;
+      }
+      @keyframes wk-avail-dots {
+        0%   { content: "."; }
+        33%  { content: ".."; }
+        66%  { content: "..."; }
       }
       /* Description: a caption under a hairline rule, so it reads as a footnote to
          the listing rather than a third line competing with price and address.
@@ -170,8 +195,8 @@
         font-size: 12.5px;
         line-height: 1.4;
         color: #9aa0ad;
-        margin-top: 9px;
-        padding-top: 8px;
+        margin-top: 6px;
+        padding-top: 6px;
         border-top: 1px solid #edeff2;
         white-space: nowrap;
         overflow: hidden;
@@ -277,9 +302,11 @@
       .wk-star-btn {
         position: absolute;
         right: 10px;
-        /* Centred in the block above the hairline (price + address): the body is
-           100px tall and the rule sits ~64px down from its top. */
-        bottom: 50px;
+        /* IMPORTANT — DO NOT change to center-of-the-whole-box. The buttons must be
+           centred on the FIRST zone only: the price + address block ABOVE the rule,
+           NOT the full white box (which also holds the description). A fixed `top`
+           keeps them there. ~13px centres a 34px button on that upper block. */
+        top: 13px;
         width: 34px;
         height: 34px;
         padding: 0;
@@ -317,6 +344,72 @@
       }
       .wk-star-btn.is-saved svg {
         fill: #f5a623;
+      }
+
+      /* Eye-off "hide from map" button: same circled treatment as the star, sitting
+         to its left. Always shown (no sign-in needed). On "is-hidden" it goes grey
+         (filled), the analog of the star's gold. */
+      .wk-hide-btn {
+        position: absolute;
+        /* One button-width + a gap to the left of the star (star: right:10px, 34px). */
+        right: 52px;
+        top: 13px; /* keep in sync with .wk-star-btn */
+        width: 34px;
+        height: 34px;
+        padding: 0;
+        border: none;
+        border-radius: 50%;
+        background: #fff;
+        border: 1px solid rgba(0, 0, 0, 0.14);
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+        color: #7a8291;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: background 0.12s, border-color 0.12s, color 0.12s, transform 0.12s;
+      }
+      /* Signed out there's no star, so the eye moves into the star's spot. */
+      body:not(.wk-can-save) .wk-hide-btn {
+        right: 10px;
+      }
+      .wk-hide-btn svg {
+        width: 22px;
+        height: 22px;
+        display: block;
+        fill: none;
+      }
+      .wk-hide-btn:hover {
+        background: #f5f6f8;
+        border-color: rgba(0, 0, 0, 0.26);
+        color: #33383f;
+        transform: scale(1.06);
+      }
+      .wk-hide-btn.is-hidden,
+      .wk-hide-btn.is-hidden:hover {
+        color: #4b5563;
+        border-color: #9aa0ad;
+        background: #eceef1;
+      }
+      /* Star and hide are mutually exclusive: while one is set, the other is locked
+         out. A disabled button is faded and inert (no hover growth). */
+      .wk-star-btn:disabled,
+      .wk-hide-btn:disabled {
+        opacity: 0.32;
+        cursor: default;
+        pointer-events: none;
+      }
+
+      /* A revealed hidden pill (only on screen while "show hidden" is on): dimmed
+         and desaturated so it clearly reads as "hidden but shown". */
+      .wk-price.is-hidden {
+        opacity: 0.55;
+        filter: grayscale(1);
+        border-style: dashed;
+      }
+      .wk-price.is-hidden:hover {
+        opacity: 1; /* full strength on hover so it's easy to click/unhide */
+        filter: none;
       }
 
       /* A pill on the Merkliste: gold edge, warm fill, gold price. No icon — colour

@@ -47,6 +47,7 @@
     return sr?.rowsFound || sr?.rowsRequested || sr?.rowsReturned || null;
   }
 
+
   // Short marker label, e.g. 679 -> "€679", 320000 -> "€320k", 1.25M -> "€1,3M".
   function compactPrice(num, fallback) {
     if (!isFinite(num)) return fallback || "?";
@@ -82,6 +83,9 @@
           address: [a.ADDRESS, a.POSTCODE, a.LOCATION].filter(Boolean).join(", "),
           size: a["ESTATE_SIZE/LIVING_AREA"] || a.ESTATE_SIZE || null,
           rooms: a.NUMBER_OF_ROOMS || null,
+          // Floor (Stockwerk). Missing ⇒ null ⇒ the popup omits it. (There's no
+          // "verfügbar ab" field in the search-list JSON — only on the ad detail page.)
+          floor: a.FLOOR || null,
           // ALL_IMAGE_URLS is one ";"-separated string of every photo of the ad;
           // MMO is just the primary one. Fall back to MMO if it's missing.
           images: (a.ALL_IMAGE_URLS ? a.ALL_IMAGE_URLS.split(";") : a.MMO ? [a.MMO] : [])
@@ -141,6 +145,7 @@
   }
   function sendSaved() {
     post({ type: "willkarte:saved", ids: [...saved], canSave: !!loginId });
+    if (typeof refreshViewMenu === "function") refreshViewMenu();
   }
   async function loadSaved() {
     if (!loginId) return;
@@ -181,24 +186,115 @@
     sendSaved();
   }
 
+  // ---- Ausblenden (our own "hide from map") -----------------------------
+  // Not a willhaben feature — purely ours. A set of ad ids stored in the
+  // extension's own storage.local (survives sessions, reloads, and navigations),
+  // global across all searches. Hidden listings are dropped from the map unless
+  // the "show hidden" toggle is on. No sign-in needed.
+  const HIDDEN_KEY = "willkarte:hidden";
+  let hidden = new Set(); // ad ids the user has hidden
+
+  // storage.local is promise-based in Firefox, callback-based in Chrome MV3.
+  // Promisify so the same code works in both.
+  function storageGet(key) {
+    return new Promise((resolve) => {
+      try {
+        const r = api.storage.local.get(key);
+        if (r && typeof r.then === "function") r.then(resolve, () => resolve({}));
+        else api.storage.local.get(key, (res) => resolve(res || {}));
+      } catch (e) {
+        resolve({});
+      }
+    });
+  }
+  function storageSet(obj) {
+    return new Promise((resolve) => {
+      try {
+        const r = api.storage.local.set(obj);
+        if (r && typeof r.then === "function") r.then(() => resolve(true), () => resolve(false));
+        else api.storage.local.set(obj, () => resolve(true));
+      } catch (e) {
+        resolve(false);
+      }
+    });
+  }
+
+  function sendHidden() {
+    post({ type: "willkarte:hidden", ids: [...hidden] });
+    if (typeof refreshViewMenu === "function") refreshViewMenu();
+  }
+  async function loadHidden() {
+    try {
+      const res = await storageGet(HIDDEN_KEY);
+      const arr = res && res[HIDDEN_KEY];
+      hidden = new Set(Array.isArray(arr) ? arr.map(String) : []);
+    } catch (e) {
+      console.log("[willkarte] hidden list not readable:", e);
+    }
+    sendHidden();
+  }
+  // The map toggles optimistically; we persist and always answer with the true
+  // set, so a failed write snaps it back.
+  async function setHidden(id, want) {
+    const key = String(id);
+    if (want) hidden.add(key);
+    else hidden.delete(key);
+    await storageSet({ [HIDDEN_KEY]: [...hidden] });
+    sendHidden();
+  }
+  // Unhide everything at once (the "Ausblenden aufheben" action).
+  async function unhideAll() {
+    hidden = new Set();
+    await storageSet({ [HIDDEN_KEY]: [] });
+    sendHidden();
+  }
+
   // ---- UI: floating toggle + full-screen overlay ------------------------
   const toggle = document.createElement("button");
   toggle.id = "willkarte-toggle";
   toggle.textContent = "🗺 Karte";
+
+  // One row of the "Ansicht" menu: a label + an on/off pill switch. `key` matches
+  // a category in the view state; the pill's on/off is driven later by JS.
+  function viewToggleHtml(key, label) {
+    return (
+      '<button type="button" role="menuitemcheckbox" class="willkarte-view-item" data-view="' + key + '">' +
+      '<span class="willkarte-view-label">' + label + "</span>" +
+      '<span class="willkarte-switch" aria-hidden="true"><span class="willkarte-knob"></span></span>' +
+      "</button>"
+    );
+  }
 
   const overlay = document.createElement("div");
   overlay.id = "willkarte-overlay";
   overlay.innerHTML =
     '<div id="willkarte-bar">' +
     '<span id="willkarte-count">willkarte</span>' +
-    '<label id="willkarte-pills" title="Wie viele Preise gleichzeitig auf der Karte. ' +
-    'Über das, was überschneidungsfrei Platz hat, werden die Preise übereinander gezeichnet.">' +
-    "<span>Sichtbare Preise</span>" +
+    '<div id="willkarte-bar-right">' +
+    '<div id="willkarte-view">' +
+    '<button type="button" id="willkarte-view-btn" aria-haspopup="true" ' +
+    'aria-expanded="false" title="Ansicht & Karte einstellen">Ansicht <span id="willkarte-view-caret">▾</span></button>' +
+    '<div id="willkarte-view-menu" role="menu" hidden>' +
+    // --- Section: what to show ---
+    '<div class="willkarte-menu-head">Anzeigen</div>' +
+    viewToggleHtml("untouched", "Ungesehene") +
+    viewToggleHtml("starred", "Vorgemerkte") +
+    viewToggleHtml("hidden", "Ausgeblendete") +
+    '<button type="button" role="menuitem" class="willkarte-view-item willkarte-view-action" id="willkarte-unhide-all" ' +
+    'title="Ausgeblendet-Liste leeren – alle wieder sichtbar">↩ Alle einblenden</button>' +
+    // --- Section: map density ---
+    '<div class="willkarte-menu-head">Karte</div>' +
+    '<label id="willkarte-pills" title="Wie viele Anzeigen gleichzeitig auf der Karte. ' +
+    'Über das, was überschneidungsfrei Platz hat, werden die Anzeigen übereinander gezeichnet.">' +
+    '<span class="willkarte-pills-row"><span>Sichtbare Anzeigen</span>' +
+    '<output id="willkarte-pills-val">' + DEFAULT_PILLS + "</output></span>" +
     '<input type="range" id="willkarte-pills-range" min="0" max="' + DEFAULT_PILLS +
     '" step="1" value="' + DEFAULT_PILLS + '">' +
-    '<output id="willkarte-pills-val">' + DEFAULT_PILLS + "</output>" +
     "</label>" +
+    "</div>" +
+    "</div>" +
     '<button type="button" id="willkarte-close" title="Karte schließen">✕ Karte schließen</button>' +
+    "</div>" +
     "</div>";
 
   const iframe = document.createElement("iframe");
@@ -257,6 +353,77 @@
     sendMaxPills();
   });
 
+  // "Ansicht" (view) dropdown: three independent on/off switches, one per listing
+  // category, plus an "unhide all" action. The map does the actual filtering; we
+  // just send which categories are shown. A listing shows if its category is on.
+  //   starred   — Merkliste flats                    (default ON)
+  //   hidden    — ausgeblendete flats (shown dimmed)  (default OFF)
+  //   untouched — neither starred nor hidden          (default ON)
+  const viewWrap = overlay.querySelector("#willkarte-view");
+  const viewBtn = overlay.querySelector("#willkarte-view-btn");
+  const viewMenu = overlay.querySelector("#willkarte-view-menu");
+  const unhideAllBtn = overlay.querySelector("#willkarte-unhide-all");
+  const viewItems = overlay.querySelectorAll(".willkarte-view-item[data-view]");
+  const view = { starred: true, hidden: false, untouched: true };
+
+  function sendView() {
+    post({ type: "willkarte:view", view: { ...view } });
+  }
+  function refreshViewMenu() {
+    for (const it of viewItems) {
+      const on = !!view[it.dataset.view];
+      it.setAttribute("aria-checked", String(on));
+      it.classList.toggle("is-on", on);
+    }
+    unhideAllBtn.hidden = !hidden.size; // gone entirely when nothing is hidden
+    // The "Ansicht" button reads as filtered whenever the view isn't the default
+    // (starred+untouched shown, hidden not).
+    const filtered = !view.starred || view.hidden || !view.untouched;
+    viewBtn.classList.toggle("is-filtered", filtered);
+  }
+
+  let menuOpen = false;
+  function openMenu() {
+    menuOpen = true;
+    viewMenu.hidden = false;
+    viewBtn.setAttribute("aria-expanded", "true");
+  }
+  function closeMenu() {
+    menuOpen = false;
+    viewMenu.hidden = true;
+    viewBtn.setAttribute("aria-expanded", "false");
+  }
+  viewBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    menuOpen ? closeMenu() : openMenu();
+  });
+  for (const it of viewItems) {
+    it.addEventListener("click", () => {
+      const k = it.dataset.view;
+      view[k] = !view[k]; // independent flip; menu stays open for more toggling
+      refreshViewMenu();
+      sendView();
+    });
+  }
+  unhideAllBtn.addEventListener("click", () => {
+    if (unhideAllBtn.disabled) return;
+    unhideAll();
+    closeMenu();
+  });
+  // Close on outside click / Escape.
+  document.addEventListener("click", (e) => {
+    if (menuOpen && !viewWrap.contains(e.target)) closeMenu();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && menuOpen) {
+      // Both this and the map's close handler live on `document`; stopImmediate
+      // keeps Escape from also closing the whole map when only the menu is open.
+      e.stopImmediatePropagation();
+      closeMenu();
+    }
+  });
+  refreshViewMenu();
+
   toggle.addEventListener("click", openMap);
   overlay.querySelector("#willkarte-close").addEventListener("click", (e) => {
     e.preventDefault();
@@ -275,7 +442,7 @@
     setPillMax(loaded);
     const capped = loaded >= MAX_LISTINGS && total && total > MAX_LISTINGS;
     overlay.querySelector("#willkarte-count").textContent =
-      "willkarte · " + loaded + (total ? " / " + total : "") + " Inserate" +
+      loaded + (total ? " / " + total : "") + " Inserate" +
       (capped ? " (Limit " + MAX_LISTINGS + ")" : "");
   }
 
@@ -295,9 +462,55 @@
       sendMaxPills();
       sendListings();
       sendSaved();
+      sendHidden();
+      sendView();
     }
     if (d?.type === "willkarte:save") setSaved(d.id, d.save);
+    if (d?.type === "willkarte:hide") setHidden(d.id, d.hide);
+    if (d?.type === "willkarte:fetchDetail") fetchDetail(d.id, d.url);
   });
+
+  // Availability ("verfügbar ab") lives ONLY on the ad's detail page, not in the
+  // search-list JSON. So fetch it lazily when a popup opens, cache per id, and
+  // answer the iframe. AVAILABLE_NOW is the label ("ab sofort"); AVAILABLE_DATE a
+  // concrete date. One request per ad you actually look at.
+  const detailCache = new Map(); // id -> { available } | "pending"
+  async function fetchDetail(id, url) {
+    if (!url || detailCache.get(id) === "pending") return;
+    if (detailCache.has(id)) {
+      post({ type: "willkarte:detail", id, available: detailCache.get(id).available });
+      return;
+    }
+    detailCache.set(id, "pending");
+    let available = null;
+    try {
+      const res = await fetch(url, { credentials: "include" });
+      console.log("[willkarte] detail fetch", id, url, "->", res.status, res.ok);
+      if (res.ok) {
+        const html = await res.text();
+        const doc = new DOMParser().parseFromString(html, "text/html");
+        const root = rootFrom(doc);
+        console.log("[willkarte] detail __NEXT_DATA__ present?", !!doc.getElementById("__NEXT_DATA__"), "root?", !!root);
+        const attrs = {};
+        (function walk(o) {
+          if (!o || typeof o !== "object") return;
+          if (typeof o.name === "string" && Array.isArray(o.values)) {
+            attrs[o.name] = o.values[0];
+            return;
+          }
+          for (const k in o) walk(o[k]);
+        })(root?.props?.pageProps || root);
+        available = attrs.AVAILABLE_NOW || attrs.AVAILABLE_DATE || null;
+        console.log("[willkarte] detail attrs found:", Object.keys(attrs).length,
+          "AVAILABLE_NOW=", attrs.AVAILABLE_NOW, "AVAILABLE_DATE=", attrs.AVAILABLE_DATE);
+      }
+    } catch (e) {
+      console.log("[willkarte] detail fetch failed for", id, e);
+    }
+    detailCache.set(id, { available });
+    console.log("[willkarte] detail reply", id, "available=", available);
+    post({ type: "willkarte:detail", id, available });
+  }
 
   // ---- Loading ----------------------------------------------------------
   function startLoading() {
@@ -307,6 +520,7 @@
     total = null;
     loadAll(gen);
     loadSaved(); // the Merkliste may have changed since the last open
+    loadHidden(); // hidden list may have changed in another tab
   }
 
   async function loadAll(gen) {

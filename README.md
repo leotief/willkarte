@@ -7,12 +7,12 @@ bzw. jedes Haus aus der Suche erscheint als Preis-Pin auf einer interaktiven Kar
 
 ![Alle Inserate der Suche als Preis-Pins auf der Karte](screenshots/uebersicht.png)
 
-Beim Darüberfahren öffnet sich ein Vorschaufenster mit Fotos, Größe, Zimmern und
-Adresse; ein Klick führt zum Inserat. Über den Stern lassen sich Inserate
-direkt von der Karte aus zur Merkliste hinzufügen oder entfernen (dafür muss man bei
-willhaben angemeldet sein); gemerkte Inserate sind auf der Karte goldfarben markiert.
+Beim Anklicken öffnet sich ein Vorschaufenster mit Fotos, Größe, Zimmern,
+Adresse, Stockwerk und Verfügbarkeit; ein Klick ins Bild führt zum Inserat. Über den Stern lassen sich Inserate direkt von der Karte aus zur Merkliste hinzufügen oder entfernen (dafür muss man bei willhaben angemeldet sein).
 
 ![Vorschaufenster mit Fotogalerie, Preis, Größe, Adresse und Merkliste-Stern](screenshots/vorschau.png)
+
+Man kann außerdem Inserate, die man nicht mehr sehen will, ausblenden in dem man auf das Augenszmbol klickt. Unter Anzeige, in der oberen Leiste, lassen sich dann ein paar zusätzliche Einstellungen dazu treffen.
 
 ## Installation
 

@@ -1,0 +1,269 @@
+/* willkarte — styles injected into willhaben pages.
+   A floating toggle button, and a full-screen map overlay.
+   Scoped under #willkarte-* ids to avoid clashing with willhaben's CSS. */
+
+#willkarte-toggle {
+  position: fixed !important;
+  right: 20px;
+  bottom: 20px;
+  z-index: 2147483646;
+  background: #f60;
+  color: #fff;
+  border: none;
+  border-radius: 24px;
+  padding: 12px 18px;
+  font: 600 15px/1 system-ui, sans-serif;
+  cursor: pointer;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.3);
+}
+#willkarte-toggle:hover {
+  background: #e65500;
+}
+
+#willkarte-overlay {
+  position: fixed !important;
+  inset: 0;
+  z-index: 2147483647;
+  display: none;
+  flex-direction: column;
+  background: #fff;
+}
+#willkarte-overlay.willkarte-open {
+  display: flex;
+}
+
+#willkarte-bar {
+  position: relative;
+  flex: 0 0 auto;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  background: #1f2430;
+  color: #fff;
+  font: 600 13px/1 system-ui, sans-serif;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+
+/* Slider (now a menu row): how many price pills the map draws at once. Label + live
+   value on top, the track below it — a stacked control that fills the menu width. */
+#willkarte-pills {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 6px 10px 8px;
+  cursor: default;
+}
+.willkarte-pills-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font: 500 12.5px/1 system-ui, sans-serif;
+  color: #e7e9ee;
+}
+#willkarte-pills-val {
+  font-weight: 700;
+  color: #f5a623;
+  font-variant-numeric: tabular-nums;
+}
+#willkarte-pills-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  margin: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.22);
+  cursor: pointer;
+}
+#willkarte-pills-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border: none;
+  border-radius: 50%;
+  background: #f5a623;
+  cursor: pointer;
+}
+#willkarte-pills-range::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: none;
+  border-radius: 50%;
+  background: #f5a623;
+  cursor: pointer;
+}
+
+/* Right-hand cluster of the top bar: the "Ansicht" filter menu + close button. */
+#willkarte-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+  z-index: 1;
+}
+
+/* "Ansicht" dropdown: a ghost button that opens a small menu below it. Gets a gold
+   tint when a filter other than "Alle" is active, so the filtered state is visible
+   without opening the menu. */
+#willkarte-view {
+  position: relative;
+}
+#willkarte-view-btn {
+  background: rgba(255, 255, 255, 0.12);
+  border: none;
+  color: #fff;
+  font: 600 12px/1 system-ui, sans-serif;
+  cursor: pointer;
+  padding: 5px 10px;
+  border-radius: 5px;
+  pointer-events: auto !important;
+  white-space: nowrap;
+}
+#willkarte-view-btn:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+#willkarte-view-btn.is-filtered {
+  background: #f5a623;
+  color: #1f2430;
+}
+#willkarte-view-btn.is-filtered:hover {
+  background: #ffb733;
+}
+#willkarte-view-caret {
+  margin-left: 2px;
+  font-size: 10px;
+  opacity: 0.8;
+}
+
+#willkarte-view-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 232px;
+  background: #262c3a;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 6px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+/* Respect the `hidden` attribute — willhaben's page styles or the display:flex
+   above would otherwise keep the menu permanently open. */
+#willkarte-view-menu[hidden] {
+  display: none !important;
+}
+/* Small section header. The first one needs no top gap; later ones sit off a
+   hairline that separates the groups. */
+.willkarte-menu-head {
+  font: 700 10px/1 system-ui, sans-serif;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: rgba(231, 233, 238, 0.45);
+  padding: 8px 10px 6px;
+}
+.willkarte-menu-head:not(:first-child) {
+  margin-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  padding-top: 12px;
+}
+.willkarte-view-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: #e7e9ee;
+  font: 500 12.5px/1 system-ui, sans-serif;
+  cursor: pointer;
+  padding: 8px 10px;
+  border-radius: 5px;
+}
+/* Same `hidden`-attribute guard as the menu itself — display:flex would otherwise
+   keep a hidden item (the "Zurücksetzen" action) visible. */
+.willkarte-view-item[hidden] {
+  display: none !important;
+}
+.willkarte-view-item:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+}
+.willkarte-view-item:disabled {
+  color: rgba(231, 233, 238, 0.34);
+  cursor: default;
+}
+.willkarte-view-label {
+  flex: 1 1 auto;
+}
+
+/* On/off pill switch, right-aligned in the row. Gold track + knob-right = on;
+   grey track + knob-left = off. */
+.willkarte-switch {
+  flex: 0 0 auto;
+  position: relative;
+  width: 30px;
+  height: 17px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.22);
+  transition: background 0.14s ease;
+}
+.willkarte-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  transition: left 0.14s ease;
+}
+.willkarte-view-item.is-on .willkarte-switch {
+  background: #f5a623;
+}
+.willkarte-view-item.is-on .willkarte-knob {
+  left: 15px;
+}
+
+/* The "Zurücksetzen" action belongs to the "Ausgeblendete" toggle above it:
+   indented and smaller, so it reads as a sub-action, not a fourth switch. It's
+   removed from the DOM flow (hidden attr) when nothing is hidden. */
+.willkarte-view-action {
+  gap: 6px;
+  margin: 1px 0 2px 12px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: #ffcf8a;
+}
+.willkarte-view-action:hover {
+  background: rgba(245, 166, 35, 0.16);
+  color: #ffdcab;
+}
+
+#willkarte-close {
+  background: rgba(255, 255, 255, 0.12);
+  border: none;
+  color: #fff;
+  font: 600 12px/1 system-ui, sans-serif;
+  cursor: pointer;
+  padding: 5px 10px;
+  border-radius: 5px;
+  pointer-events: auto !important;
+  position: relative;
+  z-index: 1;
+}
+#willkarte-close:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+#willkarte-iframe {
+  flex: 1 1 auto;
+  width: 100%;
+  border: none;
+  display: block;
+}

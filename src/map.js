@@ -10,7 +10,7 @@
 //  - A slider-controlled number of pills is placed greedily from the view centre
 //    outwards; they don't overlap until you ask for more than fit.
 //  - Units without a pill are hinted with small empty "density dots".
-//  - Popups open on HOVER (short close delay so you can reach them).
+//  - Popups open on CLICK of the pill (click the pill again, or the map, to close).
 //  - The view is reconciled on pan/zoom, so open popups survive.
 
 (function () {
@@ -116,6 +116,49 @@
   function isSaved(l) {
     return savedIds.has(String(l.id));
   }
+
+  // ---- Hidden state (our own, kept by the content script in storage.local) --
+  let hiddenIds = new Set();
+  // View filter, driven by the top-bar "Ansicht" menu: three independent on/off
+  // switches, one per listing category. A flat is drawn if its category is on.
+  //   starred   — Merkliste flats                    (default on)
+  //   hidden    — hidden flats (shown dimmed when on) (default off)
+  //   untouched — neither starred nor hidden          (default on)
+  // A hidden flat counts as "hidden" even if also starred (hidden wins).
+  let view = { starred: true, hidden: false, untouched: true };
+  function category(l) {
+    if (isHidden(l)) return "hidden";
+    if (isSaved(l)) return "starred";
+    return "untouched";
+  }
+  // Elements whose "is-hidden" class follows the hidden set (the eye button in a
+  // popup, and a revealed pill). A group watches every flat at its spot.
+  let hideTargets = [];
+
+  function isHidden(l) {
+    return hiddenIds.has(String(l.id));
+  }
+  function trackHide(el, flats) {
+    const ids = flats.map((l) => String(l.id));
+    hideTargets.push({ el, ids });
+    el.classList.toggle("is-hidden", ids.some((id) => hiddenIds.has(id)));
+  }
+  function paintHidden() {
+    hideTargets = hideTargets.filter((t) => t.el.isConnected);
+    for (const t of hideTargets)
+      t.el.classList.toggle("is-hidden", t.ids.some((id) => hiddenIds.has(id)));
+    syncButtonLocks();
+  }
+  // Optimistic: flip now, ask the content script to persist. It answers with the
+  // true set, so a failed write snaps back.
+  function toggleHidden(l) {
+    const want = !isHidden(l);
+    if (want) hiddenIds.add(String(l.id));
+    else hiddenIds.delete(String(l.id));
+    paintHidden();
+    parent.postMessage({ type: "willkarte:hide", id: l.id, hide: want }, "*");
+    render(lastListings, lastLoadId); // vanish/reappear immediately
+  }
   function trackStar(el, flats) {
     const ids = flats.map((l) => String(l.id));
     starTargets.push({ el, ids });
@@ -125,6 +168,20 @@
     starTargets = starTargets.filter((t) => t.el.isConnected); // drop removed markers
     for (const t of starTargets)
       t.el.classList.toggle("is-saved", t.ids.some((id) => savedIds.has(id)));
+    syncButtonLocks();
+  }
+
+  // Star and hide are opposites: a flat can be one or the other, not both. In the
+  // open popup each button is disabled while the other state is set, so switching
+  // means first clearing the current one.
+  let popupButtons = null; // { star, eye, flat } of the open popup, or null
+  function syncButtonLocks() {
+    if (!popupButtons || !popupButtons.star.isConnected) return;
+    const l = popupButtons.flat();
+    const saved = isSaved(l);
+    const hid = isHidden(l);
+    popupButtons.eye.disabled = saved; // starred → can't hide
+    popupButtons.star.disabled = hid; // hidden → can't star
   }
   // Optimistic: flip the star now, and ask the content script to do the real call.
   // It always answers with the true state, so a failure snaps the star back.
@@ -139,15 +196,58 @@
   // ---- Popup content ----------------------------------------------------
   // One builder for both cases: a photo gallery of the current listing, plus — when
   // several flats share the spot — a bar above the image to page between listings.
+  // "2" -> "2. Stock", "EG"/"0" -> "EG", anything already worded passes through.
+  function floorLabel(v) {
+    const s = String(v).trim();
+    if (!s) return null;
+    if (/^(eg|erdgeschoss|0)$/i.test(s)) return "EG";
+    if (/^\d+$/.test(s)) return s + ". Stock";
+    return s;
+  }
+
+  // Availability lives only on the ad's detail page (see content.js), so it's
+  // fetched lazily when a popup opens. State per id: undefined = not yet asked,
+  // "pending" = fetching, null = fetched, none given, string = the value.
+  const availById = new Map();
+  // Always "Verfügbar: " + whatever willhaben gives, verbatim (e.g. "ab sofort",
+  // "05.09.2026"). No reformatting.
+  function availLabel(v) {
+    const s = String(v).trim();
+    if (!s) return null;
+    return "Verfügbar: " + s;
+  }
+  // Ask the content script (which has the willhaben origin + cookies) to fetch this
+  // ad's detail page and return its availability. Only the first ask per id hits it.
+  function requestAvail(l) {
+    if (availById.has(l.id) || !l.url) return;
+    availById.set(l.id, "pending");
+    parent.postMessage({ type: "willkarte:fetchDetail", id: l.id, url: l.url }, "*");
+  }
+  // The availability text for a flat, given its fetch state. Rendered as plain text
+  // that continues the specs line (a "· " divider is added by CSS), just coloured
+  // differently. While loading, the value is animated dots.
+  function availChip(l) {
+    const st = availById.get(l.id);
+    if (st === undefined || st === "pending")
+      return 'Verfügbar: <span class="wk-avail-dots"></span>';
+    const label = st ? availLabel(st) : null;
+    return label ? esc(label) : "";
+  }
+
   function detailsHtml(l) {
+    const floor = l.floor ? floorLabel(l.floor) : null;
     const specs = [
       parseFloat(l.rooms) > 0 ? l.rooms + " Zi." : null,
       l.size ? l.size + " m²" : null,
+      floor,
     ].filter(Boolean).join(" · ");
     return (
+      // Price · specs, then the availability chip — all left-aligned on the top
+      // line, so it stays clear of the star/hide buttons at the right edge.
       '<div class="wk-pop-head">' +
         '<span class="wk-pop-price">' + esc(l.priceDisplay) + "</span>" +
         (specs ? '<span class="wk-pop-specs">' + esc(specs) + "</span>" : "") +
+        '<span class="wk-pop-availrow">' + availChip(l) + "</span>" +
       "</div>" +
       (l.address ? '<div class="wk-pop-addr">' + esc(l.address) + "</div>" : "") +
       (l.title ? '<div class="wk-pop-title">' + esc(l.title) + "</div>" : "")
@@ -185,6 +285,32 @@
     b.append(iconSvg(STAR_PATH, {
       stroke: "currentColor", "stroke-width": "1.6", "stroke-linejoin": "round",
     }));
+    return b;
+  }
+
+  // Eye-with-slash for "hide from map": same circled button treatment as the star,
+  // sitting to its left. The slash overlays a plain eye. On "is-hidden" the CSS
+  // shows the slashed eye greyed/filled; otherwise it's a neutral outline.
+  const EYE_PATH = "M2 11s3.4-6 9-6 9 6 9 6-3.4 6-9 6-9-6-9-6z";
+  const EYE_PUPIL_PATH = "M11 8.2a2.8 2.8 0 100 5.6 2.8 2.8 0 000-5.6z";
+  const EYE_SLASH_PATH = "M4 4l14 14";
+  function eyeOffButton() {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "wk-hide-btn";
+    b.title = "Von der Karte ausblenden";
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 22 22");
+    svg.setAttribute("aria-hidden", "true");
+    const mk = (d, attrs) => {
+      const p = document.createElementNS(SVG_NS, "path");
+      p.setAttribute("d", d);
+      for (const k in attrs) p.setAttribute(k, attrs[k]);
+      return p;
+    };
+    const stroke = { fill: "none", stroke: "currentColor", "stroke-width": "1.6", "stroke-linecap": "round", "stroke-linejoin": "round" };
+    svg.append(mk(EYE_PATH, stroke), mk(EYE_PUPIL_PATH, stroke), mk(EYE_SLASH_PATH, stroke));
+    b.append(svg);
     return b;
   }
 
@@ -247,11 +373,18 @@
 
     const body = document.createElement("div");
     body.className = "wk-pop-body";
-    // The star lives in the white strip, bottom-right. It's a sibling of the body,
-    // not a child, because the body's innerHTML is rewritten on every flat change.
+    // The text is rewritten on every flat change, so it lives in its own inner div;
+    // the icon buttons are separate children of the body (which is their positioning
+    // context) so the innerHTML rewrite never destroys them.
+    const content = document.createElement("div");
+    content.className = "wk-pop-content";
     const star = starButton();
-    onNav(star, () => toggleSaved(flats[flat]));
-    el.append(figure, body, star);
+    onNav(star, () => { if (!star.disabled) toggleSaved(flats[flat]); });
+    // Eye-off (hide from map): left of the star, always available (no sign-in).
+    const eye = eyeOffButton();
+    onNav(eye, () => { if (!eye.disabled) toggleHidden(flats[flat]); });
+    body.append(content, eye, star);
+    el.append(figure, body);
 
     function renderPhoto() {
       const l = flats[flat];
@@ -279,11 +412,18 @@
     }
     function renderFlat() {
       shot = 0;
-      body.innerHTML = detailsHtml(flats[flat]);
+      content.innerHTML = detailsHtml(flats[flat]);
       if (el._label) el._label.textContent = "Wohnung " + (flat + 1) + " von " + flats.length;
       // The one star button follows whichever flat is on show.
       starTargets = starTargets.filter((t) => t.el !== star);
       trackStar(star, [flats[flat]]);
+      // Same for the eye-off button.
+      hideTargets = hideTargets.filter((t) => t.el !== eye);
+      trackHide(eye, [flats[flat]]);
+      // Register this popup's button pair so star/hide lock each other out, then
+      // apply the lock for the flat now on show.
+      popupButtons = { star, eye, flat: () => flats[flat] };
+      syncButtonLocks();
       renderPhoto();
     }
     function goShot(step) {
@@ -295,24 +435,27 @@
     function goFlat(step) {
       flat = (flat + step + flats.length) % flats.length;
       renderFlat();
+      requestAvail(flats[flat]); // fetch on demand for the flat now shown
     }
+
+    // Called on popupopen (and when paging flats): kick off the on-demand
+    // availability fetch for the flat currently shown. NOT called at construction,
+    // so we only ever fetch the detail page of an ad the user actually opens.
+    el._wkOpen = () => requestAvail(flats[flat]);
+
+    // Let the message handler refresh just the availability chip of the flat on
+    // show, without rebuilding the popup (which would reset paging / close it).
+    el._wkRefreshAvail = (id) => {
+      if (flats[flat].id !== id) return;
+      const row = content.querySelector(".wk-pop-availrow");
+      if (row) row.innerHTML = availChip(flats[flat]);
+    };
 
     renderFlat();
     return el;
   }
 
-  // ---- Hover-to-open popups ---------------------------------------------
-  let popupTimer = null;
-  function cancelClose() {
-    if (popupTimer) {
-      clearTimeout(popupTimer);
-      popupTimer = null;
-    }
-  }
-  function scheduleClose() {
-    cancelClose();
-    popupTimer = setTimeout(() => map.closePopup(), 240);
-  }
+  // ---- Click-to-open popups ---------------------------------------------
   // Leaflet always draws popups above the marker, which clips near the top edge.
   // Instead pick a side (above/below/left/right) that fits the viewport and never
   // covers the pill, preferring the one towards the map centre so it grows inwards.
@@ -363,8 +506,11 @@
   }
   map.on("popupopen", (e) => {
     fitPopup(e.popup);
-    // The image loads late and grows the popup upwards — re-fit when it arrives.
+    // Kick off the on-demand availability fetch now — only for the ad just opened.
     const node = e.popup.getElement();
+    const pop = node && node.querySelector(".wk-pop");
+    if (pop && pop._wkOpen) pop._wkOpen();
+    // The image loads late and grows the popup upwards — re-fit when it arrives.
     if (node) {
       node.querySelectorAll("img").forEach((img) => {
         if (!img.complete) img.addEventListener("load", () => fitPopup(e.popup), { once: true });
@@ -376,24 +522,20 @@
     if (p) fitPopup(p);
   });
 
-  function attachHoverPopup(marker) {
+  function attachClickPopup(marker) {
     // Listen on the pill element, not the Leaflet marker (whose hit-target is the
-    // whole container) — so the popup opens only when the cursor is on the pill.
+    // whole container) — so the popup toggles only when the pill itself is clicked.
+    // Clicking the pill toggles the popup; clicking the map elsewhere closes it
+    // (Leaflet's closePopupOnClick). The ad opens via the popup image, not the pill.
     marker.on("add", () => {
       const root = marker.getElement();
       const el = root && root.querySelector(".wk-price");
       if (!el) return;
-      el.addEventListener("mouseenter", () => {
-        cancelClose();
-        marker.openPopup();
+      el.style.cursor = "pointer";
+      el.addEventListener("click", (e) => {
+        e.stopPropagation(); // don't let the map treat it as a "click elsewhere"
+        marker.togglePopup();
       });
-      el.addEventListener("mouseleave", scheduleClose);
-    });
-    marker.on("popupopen", (e) => {
-      const node = e.popup.getElement();
-      if (!node) return;
-      node.addEventListener("mouseenter", cancelClose);
-      node.addEventListener("mouseleave", scheduleClose);
     });
   }
 
@@ -411,16 +553,13 @@
       icon: pill('<div class="wk-price">' + esc(l.priceLabel) + "</div>"),
       riseOnHover: true,
     });
-    m.bindPopup(popupEl([l]), { minWidth: 320, maxWidth: 520, autoPan: false });
-    attachHoverPopup(m);
+    m.bindPopup(popupEl([l]), { minWidth: 320, maxWidth: 680, autoPan: false });
+    attachClickPopup(m);
     m.on("add", () => {
       const el = m.getElement() && m.getElement().querySelector(".wk-price");
-      if (!el) return;
-      trackStar(el, [l]);
-      // Clicking the pill opens the willhaben ad, same as clicking the image.
-      if (l.url) {
-        el.style.cursor = "pointer";
-        el.addEventListener("click", () => window.open(l.url, "_blank", "noopener"));
+      if (el) {
+        trackStar(el, [l]);
+        trackHide(el, [l]);
       }
     });
     return m;
@@ -434,12 +573,16 @@
       '<span class="wk-more">+' + (unit.n - 1) + "</span>" +
       "</div>";
     const m = L.marker([unit.lat, unit.lng], { icon: pill(html), riseOnHover: true });
-    m.bindPopup(popupEl(unit.flats), { minWidth: 320, maxWidth: 520, autoPan: false });
-    attachHoverPopup(m);
-    // A group pill stars if any flat at that spot is on the Merkliste.
+    m.bindPopup(popupEl(unit.flats), { minWidth: 320, maxWidth: 680, autoPan: false });
+    attachClickPopup(m);
+    // A group pill stars if any flat at that spot is on the Merkliste, and reads
+    // as hidden if any of them is hidden (while "show hidden" reveals it).
     m.on("add", () => {
       const el = m.getElement() && m.getElement().querySelector(".wk-price");
-      if (el) trackStar(el, unit.flats);
+      if (el) {
+        trackStar(el, unit.flats);
+        trackHide(el, unit.flats);
+      }
     });
     return m;
   }
@@ -479,6 +622,7 @@
   const shown = new Map(); // key -> marker
   let didFit = false;
   let lastLoadId = null;
+  let lastListings = []; // last listings received, for re-render on hide toggle
 
   function updateVisible() {
     if (!units.length) {
@@ -503,15 +647,18 @@
     // a cell, so keys are unique.
     const cellKey = (p) => Math.round(p.x / PILL_W) + "_" + Math.round(p.y / PILL_H);
 
-    // Merkliste units first: always a pill, never demoted by the cap or a collision,
-    // so a starred flat can't hide at any zoom. Keyed by listing id (survives a zoom).
+    // Pinned units first: always a pill, never demoted by the cap or a collision.
+    // Only hidden units (when the "hidden" switch is on), so each stays reachable
+    // to unhide — a hidden flat demoted to a dot couldn't be unhidden. Starred
+    // flats are NOT pinned: with the view toggles they no longer need to override
+    // the slider cap. Keyed by listing id (survives a zoom).
     for (const u of units) {
-      if (!u.flats.some(isSaved)) continue;
+      if (!(view.hidden && u.flats.some(isHidden))) continue;
       if (!bounds.contains([u.lat, u.lng])) continue;
       const p = map.project([u.lat, u.lng], zoom);
       placed.push(p);
       const key = cellKey(p);
-      // If already shown as a normal pill, keep that key so starring leaves the
+      // If already shown as a normal pill, keep that key so toggling leaves the
       // marker (and its open popup) alone.
       desired.set(shown.has("p:" + key) ? "p:" + key : "s:" + u.flats[0].id, marker(u));
     }
@@ -522,7 +669,7 @@
     const c = map.project(map.getCenter(), zoom);
     const candidates = [];
     units.forEach((u, i) => {
-      if (u.flats.some(isSaved)) return; // already pinned above
+      if (view.hidden && u.flats.some(isHidden)) return; // pinned above
       if (!bounds.contains([u.lat, u.lng])) return;
       const p = map.project([u.lat, u.lng], zoom);
       candidates.push({ u, p, i, d: Math.round(c.distanceTo(p) / PILL_W) });
@@ -587,7 +734,9 @@
       lastLoadId = loadId;
       didFit = false;
     }
-    const flats = (listings || []).slice().sort(priceAsc);
+    lastListings = listings || [];
+    // A flat is drawn only if its category's switch is on.
+    const flats = lastListings.filter((l) => view[category(l)]).slice().sort(priceAsc);
     units = buildUnits(flats);
 
     layer.clearLayers();
@@ -615,12 +764,31 @@
     const d = e.data;
     if (!d) return;
     if (d.type === "willkarte:listings") render(d.listings, d.loadId);
+    if (d.type === "willkarte:detail") {
+      availById.set(String(d.id), d.available || null);
+      // If the open popup shows this flat, refresh its chip in place.
+      const p = map._popup;
+      const el = p && p.getElement() && p.getElement().querySelector(".wk-pop");
+      console.log("[willkarte] iframe got detail", d.id, "available=", d.available, "refresh?", !!(el && el._wkRefreshAvail));
+      if (el && el._wkRefreshAvail) el._wkRefreshAvail(String(d.id));
+    }
     if (d.type === "willkarte:saved") {
       savedIds = new Set((d.ids || []).map(String));
       canSave = !!d.canSave; // signed out: no star button at all
       document.body.classList.toggle("wk-can-save", canSave);
       paintStars();
-      updateVisible(); // a newly starred flat gets promoted from dot to pill
+      // Starring moves a flat between the "untouched" and "starred" categories, so
+      // whether it's drawn can change — rebuild units to re-apply the filter.
+      render(lastListings, lastLoadId);
+    }
+    if (d.type === "willkarte:hidden") {
+      hiddenIds = new Set((d.ids || []).map(String));
+      paintHidden();
+      render(lastListings, lastLoadId); // apply the (un)hides to what's drawn
+    }
+    if (d.type === "willkarte:view") {
+      view = Object.assign({ starred: true, hidden: false, untouched: true }, d.view || {});
+      render(lastListings, lastLoadId);
     }
     if (d.type === "willkarte:maxpills" && d.n >= 0) {
       maxPills = d.n;
