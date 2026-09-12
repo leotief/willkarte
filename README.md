@@ -14,6 +14,8 @@ Adresse, Stockwerk und Verfügbarkeit; ein Klick ins Bild führt zum Inserat. Ü
 
 Man kann außerdem Inserate, die man nicht mehr sehen will, ausblenden in dem man auf das Augenszmbol klickt. Unter Anzeige, in der oberen Leiste, lassen sich dann ein paar zusätzliche Einstellungen dazu treffen.
 
+Unter **Zusätzliche Filter** (obere Leiste) gibt es Filter, die willhaben selbst nicht bietet: nach **Verfügbarkeit** (verfügbar-ab-Monat, frühestens/spätestens), nach **Veröffentlichung/Änderung** (z. B. nur der letzten 3 Tage oder seit dem letzten Besuch) und nach **Stockwerk** (Mehrfachauswahl). Heute neu oder aktualisierte Inserate tragen ein kleines **neu**-Kennzeichen.
+
 ## Installation
 
 ### Chromium-based (Chrome, Edge, Brave...)

@@ -138,6 +138,177 @@
   opacity: 0.8;
 }
 
+/* "Filter" dropdown: same ghost-button + menu look as "Ansicht". */
+#willkarte-filter {
+  position: relative;
+}
+#willkarte-filter-btn {
+  background: rgba(255, 255, 255, 0.12);
+  border: none;
+  color: #fff;
+  font: 600 12px/1 system-ui, sans-serif;
+  cursor: pointer;
+  padding: 5px 10px;
+  border-radius: 5px;
+  pointer-events: auto !important;
+  white-space: nowrap;
+}
+#willkarte-filter-btn:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+#willkarte-filter-btn.is-filtered {
+  background: #f5a623;
+  color: #1f2430;
+}
+#willkarte-filter-btn.is-filtered:hover {
+  background: #ffb733;
+}
+#willkarte-filter-caret {
+  margin-left: 2px;
+  font-size: 10px;
+  opacity: 0.8;
+}
+#willkarte-filter-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 232px;
+  background: #262c3a;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 6px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+#willkarte-filter-menu[hidden] {
+  display: none !important;
+}
+
+/* The date-filter row inside the Filter menu. */
+#willkarte-avail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 10px 8px;
+}
+.willkarte-avail-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* "frühestens" / "spätestens" label, fixed width so both dropdowns line up. */
+.willkarte-avail-lbl {
+  flex: 0 0 62px;
+  font: 500 11.5px/1 system-ui, sans-serif;
+  color: rgba(231, 233, 238, 0.65);
+}
+/* Month+year dropdown for each bound. */
+.willkarte-avail-sel {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #e7e9ee;
+  font: 500 12.5px/1 system-ui, sans-serif;
+  padding: 6px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.willkarte-avail-sel option {
+  /* native option lists render in the OS colours, but set these for the browsers
+     that honour them so the menu isn't white-on-white. */
+  background: #262c3a;
+  color: #e7e9ee;
+}
+.willkarte-avail-status {
+  font: 500 11px/1.3 system-ui, sans-serif;
+  color: rgba(231, 233, 238, 0.55);
+}
+.willkarte-avail-status[hidden] {
+  display: none !important;
+}
+
+/* Publish-date slider row (fixed stops), same look as the pills slider. */
+#willkarte-pub {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 4px 10px 8px;
+  cursor: default;
+}
+.willkarte-pub-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font: 500 12.5px/1 system-ui, sans-serif;
+  color: #e7e9ee;
+}
+#willkarte-pub-val {
+  font-weight: 700;
+  color: #f5a623;
+  font-variant-numeric: tabular-nums;
+}
+#willkarte-pub-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  margin: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.22);
+  cursor: pointer;
+}
+#willkarte-pub-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border: none;
+  border-radius: 50%;
+  background: #f5a623;
+  cursor: pointer;
+}
+#willkarte-pub-range::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: none;
+  border-radius: 50%;
+  background: #f5a623;
+  cursor: pointer;
+}
+
+/* Floor filter: one row of equal-width multi-select toggle chips (no wrap). */
+#willkarte-floor {
+  display: flex;
+  gap: 4px;
+  padding: 4px 10px 8px;
+}
+.willkarte-floor-chip {
+  flex: 1 1 0; /* share the row equally, so all six fit on one line */
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: #e7e9ee;
+  font: 600 12px/1 system-ui, sans-serif;
+  cursor: pointer;
+  padding: 6px 4px;
+  border-radius: 6px;
+  text-align: center;
+}
+.willkarte-floor-chip:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+.willkarte-floor-chip.is-on {
+  background: #f5a623;
+  border-color: #f5a623;
+  color: #1f2430;
+}
+.willkarte-floor-chip.is-on:hover {
+  background: #ffb733;
+}
+
 #willkarte-view-menu {
   position: absolute;
   top: calc(100% + 6px);

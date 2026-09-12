@@ -234,6 +234,162 @@
     return label ? esc(label) : "";
   }
 
+  // ---- "Verfügbar ab" range filter -------------------------------------
+  // A MONTH range on the ad's "verfügbar ab": availFrom = earliest acceptable month,
+  // availTo = latest (either/both, a month index or null). Set from the top bar's
+  // "Filter" dropdown as "yyyy-mm". content.js background-fetches every ad's date
+  // while active; here we hide ads whose availability month falls outside [from, to].
+  //   • a concrete date  → its month
+  //   • "ab sofort"/undated string → the CURRENT month (available now)
+  //   • not fetched yet / no availability at all → unknown → always shown
+  let availFrom = null; // month index or null
+  let availTo = null;
+  function availFilterActive() {
+    return availFrom != null || availTo != null;
+  }
+  // Month index = year*12 + (month-1), so it's directly comparable across years.
+  function monthIndex(year, month0) {
+    return year * 12 + month0;
+  }
+  // Parse a "yyyy-mm" bound (from the dropdown) to a month index, or null.
+  function parseMonth(v) {
+    const m = String(v || "").match(/^(\d{4})-(\d{1,2})$/);
+    return m ? monthIndex(Number(m[1]), Number(m[2]) - 1) : null;
+  }
+  // Parse willhaben's availability string to a Date, or null if it isn't a concrete
+  // date (e.g. "ab sofort", "sofort", "nach Vereinbarung").
+  function parseAvailDate(v) {
+    if (!v) return null;
+    const s = String(v).trim();
+    // dd.mm.yyyy (willhaben's AVAILABLE_DATE format)
+    let m = s.match(/(\d{1,2})\.(\d{1,2})\.(\d{4})/);
+    if (m) return new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+    // yyyy-mm-dd, just in case
+    m = s.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    return null; // "ab sofort" etc. → not a date
+  }
+  // True while content.js is background-fetching all dates. During loading the map
+  // stays STATIC — markers aren't rebuilt as dates arrive (a rebuild would kill a
+  // popup mid-open) — but the filtered-out count still updates live. The filter is
+  // actually applied to the markers once loading ends.
+  let availLoading = false;
+
+  // Tell content.js how many flats the filter currently rules out, so the top-left
+  // counter can show it. Coalesced to one post per frame (dates pour in during a
+  // sweep). Counts over ALL listings in view categories, not just drawn pills.
+  let availCountQueued = false;
+  function scheduleAvailCount() {
+    if (availCountQueued) return;
+    availCountQueued = true;
+    requestAnimationFrame(() => {
+      availCountQueued = false;
+      sendAvailCount();
+    });
+  }
+  function sendAvailCount() {
+    const active = availFilterActive();
+    // Count flats ruled out by ANY extra filter (availability OR publish-date), over
+    // the in-view categories, so the top-left counter reads "N ausgeblendet".
+    const inView = lastListings.filter((l) => view[category(l)]);
+    const hidden = inView.filter((l) => outsideAvail(l) || tooOld(l) || wrongFloor(l)).length;
+    parent.postMessage({ type: "willkarte:availcount", hidden, active }, "*");
+  }
+  // The flat's availability MONTH index, or null if we genuinely can't judge it:
+  //   • not fetched yet / pending / no availability given → null (stays shown)
+  //   • "ab sofort" or any non-date string → the current month (available now)
+  //   • a concrete date → its month
+  function availMonthOf(l) {
+    if (!availFilterActive()) return null;
+    const st = availById.get(l.id);
+    if (st === undefined || st === "pending" || st == null) return null; // unknown → shown
+    const d = parseAvailDate(st);
+    if (d) return monthIndex(d.getFullYear(), d.getMonth());
+    const now = new Date();
+    return monthIndex(now.getFullYear(), now.getMonth()); // "ab sofort" → now
+  }
+  // HIDE if the availability month is after the latest bound.
+  function tooLate(l) {
+    if (availTo == null) return false;
+    const mi = availMonthOf(l);
+    return mi != null && mi > availTo;
+  }
+  // HIDE if the availability month is before the earliest bound. (An "ab sofort" flat
+  // resolves to the current month, so a future "frühestens" correctly hides it.)
+  function tooEarly(l) {
+    if (availFrom == null) return false;
+    const mi = availMonthOf(l);
+    return mi != null && mi < availFrom;
+  }
+  // Outside the [from, to] range (either bound may be off).
+  function outsideAvail(l) {
+    return tooLate(l) || tooEarly(l);
+  }
+
+  // ---- "Veröffentlicht / geändert" filter -------------------------------
+  // Cheap: PUBLISHED (ms) is on every listing (`l.published`), so no fetch/freeze.
+  // maxAgeDays 0 = off; sinceTs null = "seit letztem Besuch" off. A flat is HIDDEN
+  // if it's older than the age window OR (when the toggle is on) not newer than the
+  // last-visit baseline. Missing `published` ⇒ shown (don't hide what we can't date).
+  let pubMaxAgeDays = 0;
+  let pubSinceTs = null;
+  function tooOld(l) {
+    if (!pubMaxAgeDays && pubSinceTs == null) return false;
+    const t = l.published;
+    if (!t) return false; // no date → keep
+    if (pubMaxAgeDays > 0) {
+      const cutoff = Date.now() - pubMaxAgeDays * 86400000;
+      if (t < cutoff) return true;
+    }
+    if (pubSinceTs != null && t <= pubSinceTs) return true; // not new since last visit
+    return false;
+  }
+
+  // ---- Stockwerk (floor) filter -----------------------------------------
+  // Cheap: FLOOR is in the search JSON (`l.floor`). `floorSel` = selected keys
+  // (eg / 1 / 2 / 3 / 4plus / dg); empty = off. A flat is HIDDEN if the filter is on
+  // AND its floor is KNOWN AND its key isn't selected. Unknown floor ⇒ shown.
+  let floorSel = new Set();
+  // Map a raw FLOOR value to a filter key, or null if it's absent/unrecognised.
+  // Mirrors floorLabel: EG/erdgeschoss/0 = ground; DG/dachgeschoss = top; digits = story.
+  function floorKey(v) {
+    if (v == null) return null;
+    const s = String(v).trim();
+    if (!s) return null;
+    if (/^(eg|erdgescho(ss|ß)|parterre|0)$/i.test(s)) return "eg";
+    if (/dachgescho(ss|ß)|^dg$/i.test(s)) return "dg";
+    const m = s.match(/^(\d+)/);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      if (n === 0) return "eg";
+      if (n >= 4) return "4plus";
+      return String(n); // 1 / 2 / 3
+    }
+    return null; // worded value we don't classify → treat as unknown → shown
+  }
+  function wrongFloor(l) {
+    if (!floorSel.size) return false;
+    const k = floorKey(l.floor);
+    if (k == null) return false; // unknown floor → keep
+    return !floorSel.has(k);
+  }
+
+  // A "neu" stamp on the pill for ads published/bumped TODAY (since local midnight).
+  // Uses the same `l.published` (ms) as the filter. Always shown while the ad is from
+  // today — opening it does NOT clear the badge.
+  function startOfToday() {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+  }
+  function isNew(l) {
+    return !!l.published && l.published >= startOfToday();
+  }
+  // The badge markup, or "" — a group counts as new if ANY flat at the spot is new.
+  function neuBadge(flats) {
+    return flats.some(isNew) ? '<span class="wk-neu" aria-hidden="true">neu</span>' : "";
+  }
+
   function detailsHtml(l) {
     const floor = l.floor ? floorLabel(l.floor) : null;
     const specs = [
@@ -370,6 +526,11 @@
     onNav(back, () => goShot(-1));
     onNav(fwd, () => goShot(1));
     figure.append(imgBox, back, fwd, dots);
+    // "neu" stamp on the popup's bottom-right corner (like the pill's), per flat.
+    const neu = document.createElement("span");
+    neu.className = "wk-neu wk-neu-pop";
+    neu.textContent = "neu";
+    el._neu = neu;
 
     const body = document.createElement("div");
     body.className = "wk-pop-body";
@@ -384,7 +545,7 @@
     const eye = eyeOffButton();
     onNav(eye, () => { if (!eye.disabled) toggleHidden(flats[flat]); });
     body.append(content, eye, star);
-    el.append(figure, body);
+    el.append(figure, body, neu);
 
     function renderPhoto() {
       const l = flats[flat];
@@ -413,6 +574,7 @@
     function renderFlat() {
       shot = 0;
       content.innerHTML = detailsHtml(flats[flat]);
+      if (el._neu) el._neu.hidden = !isNew(flats[flat]); // per-flat "neu" stamp
       if (el._label) el._label.textContent = "Wohnung " + (flat + 1) + " von " + flats.length;
       // The one star button follows whichever flat is on show.
       starTargets = starTargets.filter((t) => t.el !== star);
@@ -550,7 +712,7 @@
   // no icon — a star glyph crowds a pill this small.
   function pricePillMarker(l) {
     const m = L.marker([l.lat, l.lng], {
-      icon: pill('<div class="wk-price">' + esc(l.priceLabel) + "</div>"),
+      icon: pill('<div class="wk-price">' + esc(l.priceLabel) + neuBadge([l]) + "</div>"),
       riseOnHover: true,
     });
     m.bindPopup(popupEl([l]), { minWidth: 320, maxWidth: 680, autoPan: false });
@@ -571,6 +733,7 @@
       '<div class="wk-price wk-group">' +
       esc(cheapest.priceLabel) +
       '<span class="wk-more">+' + (unit.n - 1) + "</span>" +
+      neuBadge(unit.flats) +
       "</div>";
     const m = L.marker([unit.lat, unit.lng], { icon: pill(html), riseOnHover: true });
     m.bindPopup(popupEl(unit.flats), { minWidth: 320, maxWidth: 680, autoPan: false });
@@ -735,8 +898,12 @@
       didFit = false;
     }
     lastListings = listings || [];
-    // A flat is drawn only if its category's switch is on.
-    const flats = lastListings.filter((l) => view[category(l)]).slice().sort(priceAsc);
+    // A flat is drawn only if its category's switch is on and it isn't ruled out by
+    // the availability range (outsideAvail), publish-date (tooOld) or floor (wrongFloor).
+    const flats = lastListings
+      .filter((l) => view[category(l)] && !outsideAvail(l) && !tooOld(l) && !wrongFloor(l))
+      .slice()
+      .sort(priceAsc);
     units = buildUnits(flats);
 
     layer.clearLayers();
@@ -744,6 +911,7 @@
 
     if (!units.length) {
       empty.style.display = "flex";
+      sendAvailCount();
       return;
     }
     empty.style.display = "none";
@@ -755,6 +923,7 @@
       didFit = true;
     }
     updateVisible();
+    sendAvailCount();
   }
 
   map.on("zoomend", updateVisible);
@@ -771,6 +940,14 @@
       const el = p && p.getElement() && p.getElement().querySelector(".wk-pop");
       console.log("[willkarte] iframe got detail", d.id, "available=", d.available, "refresh?", !!(el && el._wkRefreshAvail));
       if (el && el._wkRefreshAvail) el._wkRefreshAvail(String(d.id));
+      // A newly-known date can push a flat over the cutoff. During the loading
+      // sweep the map stays static (only the count updates), so popups keep
+      // working; the markers are re-filtered when loading ends. When NOT loading
+      // (a single lazy fetch from opening a popup) it's safe to re-render.
+      if (availFilterActive()) {
+        scheduleAvailCount();
+        if (!availLoading) render(lastListings, lastLoadId);
+      }
     }
     if (d.type === "willkarte:saved") {
       savedIds = new Set((d.ids || []).map(String));
@@ -789,6 +966,31 @@
     if (d.type === "willkarte:view") {
       view = Object.assign({ starred: true, hidden: false, untouched: true }, d.view || {});
       render(lastListings, lastLoadId);
+    }
+    if (d.type === "willkarte:availfilter") {
+      availFrom = parseMonth(d.from); // "yyyy-mm" → month index, or null
+      availTo = parseMonth(d.to);
+      render(lastListings, lastLoadId); // apply immediately with dates known so far
+      sendAvailCount();
+    }
+    if (d.type === "willkarte:pubfilter") {
+      pubMaxAgeDays = Number(d.maxAgeDays) || 0;
+      pubSinceTs = d.sinceTs != null ? Number(d.sinceTs) : null;
+      render(lastListings, lastLoadId); // instant — published is in the listing data
+      sendAvailCount();
+    }
+    if (d.type === "willkarte:floorfilter") {
+      floorSel = new Set((d.floors || []).map(String));
+      render(lastListings, lastLoadId); // instant — FLOOR is in the listing data
+      sendAvailCount();
+    }
+    // The date sweep started/ended. While it runs the map is frozen (see the
+    // detail handler); when it ends, apply the filter to the markers in one pass.
+    if (d.type === "willkarte:loading") {
+      const was = availLoading;
+      availLoading = !!d.active;
+      if (was && !availLoading && availFilterActive()) render(lastListings, lastLoadId);
+      sendAvailCount();
     }
     if (d.type === "willkarte:maxpills" && d.n >= 0) {
       maxPills = d.n;

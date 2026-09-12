@@ -26,6 +26,7 @@
 
       /* ---- Airbnb-style price pill ---- */
       .wk-price {
+        position: relative; /* anchor the "neu" stamp; overflow stays visible */
         pointer-events: auto;
         display: inline-flex;
         align-items: center;
@@ -42,6 +43,43 @@
         transform: translate(-50%, -50%); /* center on the coordinate */
         cursor: pointer;
         transition: transform 0.08s ease, background 0.08s ease, color 0.08s ease;
+      }
+      /* "neu" stamp: a small pill on the top-right corner of a price pill, for ads
+         published/bumped within the last 2 days. Sits on the edge (translate), does
+         not affect the pill's own width/centering. */
+      .wk-neu {
+        position: absolute;
+        /* straddle the pill's bottom edge — partly inside the pill, hanging below
+           the price number so it never covers it */
+        bottom: -6px;
+        right: -4px;
+        background: #2f74d0;
+        color: #fff;
+        font-size: 7.5px;
+        font-weight: 700;
+        line-height: 1;
+        letter-spacing: 0.2px;
+        text-transform: uppercase;
+        padding: 1.5px 3px;
+        border-radius: 4px;
+        border: 1px solid #fff;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+        pointer-events: none; /* never eats a hover meant for the pill */
+      }
+      /* Same badge as the pill's, anchored to the popup's bottom-right corner
+         (the .wk-pop box). A bit larger to suit the popup scale. */
+      .wk-neu-pop {
+        bottom: 10px;
+        right: 12px;
+        top: auto;
+        left: auto;
+        z-index: 2;
+        font-size: 10px;
+        padding: 3px 6px;
+        border-radius: 5px;
+      }
+      .wk-neu-pop[hidden] {
+        display: none;
       }
       .wk-price:hover {
         background: #222;

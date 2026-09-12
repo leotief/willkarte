@@ -28,6 +28,14 @@
   let byId = new Map(); // de-dupes across pages
   let total = null; // full hit count for the current filters
   let loadGen = 0;
+  // "Verfügbar ab" range filter — month granularity, "yyyy-mm" strings (or null).
+  // `availFilterFrom` = earliest acceptable month, `availFilterTo` = latest. Either or
+  // both may be set. Set from the "Filter" dropdown; drives the detail-page sweep.
+  let availFilterFrom = null;
+  let availFilterTo = null;
+  function availFilterOn() {
+    return !!availFilterFrom || !!availFilterTo;
+  }
 
   // ---- Parsing willhaben's embedded data --------------------------------
   function rootFrom(doc) {
@@ -86,6 +94,14 @@
           // Floor (Stockwerk). Missing ⇒ null ⇒ the popup omits it. (There's no
           // "verfügbar ab" field in the search-list JSON — only on the ad detail page.)
           floor: a.FLOOR || null,
+          // PUBLISHED = ms timestamp of when the ad was last published/bumped —
+          // willhaben updates it on edit/bump, so it matches the detail page's
+          // "Zuletzt geändert". In the search JSON on every listing (no fetch).
+          // Feeds the "Veröffentlicht / geändert" filter.
+          published: (() => {
+            const t = parseInt(a.PUBLISHED, 10);
+            return isFinite(t) ? t : null;
+          })(),
           // ALL_IMAGE_URLS is one ";"-separated string of every photo of the ad;
           // MMO is just the primary one. Fall back to MMO if it's missing.
           images: (a.ALL_IMAGE_URLS ? a.ALL_IMAGE_URLS.split(";") : a.MMO ? [a.MMO] : [])
@@ -194,6 +210,26 @@
   const HIDDEN_KEY = "willkarte:hidden";
   let hidden = new Set(); // ad ids the user has hidden
 
+  // "Neue seit letztem Besuch": the baseline is the time of the PREVIOUS page load.
+  // Captured once when this content script inits (i.e. per willhaben page load /
+  // reload) — reopening the map on the same page keeps the same baseline; only a
+  // reload advances it. `prevVisitTs` (ms) is what the filter compares against;
+  // `now` is written back so the *next* reload sees what's new since this one.
+  const VISIT_KEY = "willkarte:lastVisit";
+  let prevVisitTs = 0; // 0 until read; means "everything is new" on a first-ever visit
+  (async () => {
+    try {
+      const res = await storageGet(VISIT_KEY);
+      const t = res && res[VISIT_KEY];
+      prevVisitTs = typeof t === "number" && isFinite(t) ? t : 0;
+    } catch (e) {
+      prevVisitTs = 0;
+    }
+    await storageSet({ [VISIT_KEY]: Date.now() });
+    // If the filter was already toggled on before this resolved, re-send it.
+    if (typeof sendPubFilter === "function") sendPubFilter();
+  })();
+
   // storage.local is promise-based in Firefox, callback-based in Chrome MV3.
   // Promisify so the same code works in both.
   function storageGet(key) {
@@ -265,12 +301,70 @@
     );
   }
 
+  // The multi-select floor filter: a compact row of toggle chips. `key` is the
+  // filter key sent to the map; on/off is driven later by JS (is-on class).
+  const FLOOR_CHIPS = [
+    { key: "eg", label: "EG" },
+    { key: "1", label: "1" },
+    { key: "2", label: "2" },
+    { key: "3", label: "3" },
+    { key: "4plus", label: "4+" },
+    { key: "dg", label: "DG" },
+  ];
+  function floorChipsHtml() {
+    return FLOOR_CHIPS.map(
+      (c) =>
+        '<button type="button" role="menuitemcheckbox" aria-checked="false" ' +
+        'class="willkarte-floor-chip" data-floor="' + c.key + '">' + c.label + "</button>"
+    ).join("");
+  }
+
   const overlay = document.createElement("div");
   overlay.id = "willkarte-overlay";
   overlay.innerHTML =
     '<div id="willkarte-bar">' +
     '<span id="willkarte-count">willkarte</span>' +
     '<div id="willkarte-bar-right">' +
+    // --- "Filter" dropdown: extra filters willhaben can't do natively. ---
+    '<div id="willkarte-filter">' +
+    '<button type="button" id="willkarte-filter-btn" aria-haspopup="true" ' +
+    'aria-expanded="false" title="Zusätzliche Filter">Zusätzliche Filter <span id="willkarte-filter-caret">▾</span></button>' +
+    '<div id="willkarte-filter-menu" role="menu" hidden>' +
+    '<div class="willkarte-menu-head">Verfügbar ab</div>' +
+    '<label id="willkarte-avail" title="Monat, in dem die Wohnung verfügbar sein soll (verfügbar ab). ' +
+    '„frühestens“ = nicht vor diesem Monat, „spätestens“ = nicht nach diesem Monat. Beide optional. ' +
+    'Anzeigen ohne Datum bleiben sichtbar; „ab sofort“ zählt als der aktuelle Monat. ' +
+    'Aktiviert lädt willkarte die „verfügbar ab“-Daten aller Anzeigen nach.">' +
+    // Month+year dropdowns (not <input type=date>): the native picker showed MM/DD/YYYY
+    // (its format follows the browser UI locale and can't be forced) and day precision
+    // isn't needed here. Options are filled in JS (they depend on the current month).
+    '<span class="willkarte-avail-row">' +
+    '<span class="willkarte-avail-lbl">frühestens</span>' +
+    '<select id="willkarte-avail-from" class="willkarte-avail-sel"></select>' +
+    "</span>" +
+    '<span class="willkarte-avail-row">' +
+    '<span class="willkarte-avail-lbl">spätestens</span>' +
+    '<select id="willkarte-avail-date" class="willkarte-avail-sel"></select>' +
+    "</span>" +
+    '<span id="willkarte-avail-status" class="willkarte-avail-status" hidden></span>' +
+    "</label>" +
+    // --- Section: publish / last-changed date (PUBLISHED, in the search JSON) ---
+    // One slider, fixed non-linear stops. "Seit letztem Besuch" is the first stop
+    // after "Alle" — so the two publish-date filters are one mutually-exclusive choice.
+    '<div class="willkarte-menu-head">Veröffentlicht / geändert</div>' +
+    '<label id="willkarte-pub" title="Nur Anzeigen zeigen, die in diesem Zeitraum veröffentlicht oder aktualisiert wurden. „Seit letztem Besuch“ = seit deinem vorigen Besuch dieser Seite.">' +
+    '<span class="willkarte-pub-row"><span>Zeitraum</span>' +
+    '<output id="willkarte-pub-val">Alle</output></span>' +
+    '<input type="range" id="willkarte-pub-range" min="0" max="7" step="1" value="0">' +
+    "</label>" +
+    // --- Section: floor (Stockwerk), multi-select chips ---
+    '<div class="willkarte-menu-head">Stockwerk</div>' +
+    '<div id="willkarte-floor" title="Nur ausgewählte Stockwerke zeigen. Mehrfachauswahl möglich. ' +
+    'Anzeigen ohne Stockwerk-Angabe bleiben sichtbar.">' +
+    floorChipsHtml() +
+    "</div>" +
+    "</div>" +
+    "</div>" +
     '<div id="willkarte-view">' +
     '<button type="button" id="willkarte-view-btn" aria-haspopup="true" ' +
     'aria-expanded="false" title="Ansicht & Karte einstellen">Ansicht <span id="willkarte-view-caret">▾</span></button>' +
@@ -384,6 +478,7 @@
 
   let menuOpen = false;
   function openMenu() {
+    closeFilterMenu(); // only one dropdown open at a time
     menuOpen = true;
     viewMenu.hidden = false;
     viewBtn.setAttribute("aria-expanded", "true");
@@ -410,19 +505,222 @@
     unhideAll();
     closeMenu();
   });
-  // Close on outside click / Escape.
+  refreshViewMenu();
+
+  // ---- "Filter" dropdown ------------------------------------------------
+  // Extra filters willhaben can't do itself. Currently: a latest availability
+  // date ("verfügbar bis"). The date lives only on each ad's detail page, so the
+  // map can only filter an ad once its date is known. In the DEFAULT map dates
+  // are fetched lazily (on popup open) — but the moment a date filter is set we
+  // fetch the detail page of EVERY loaded ad, throttled, so the whole map obeys
+  // it. Clearing the filter stops the sweep. The map keeps unknown/"ab sofort"
+  // ads shown, so it applies the cutoff itself as dates stream in.
+  const filterWrap = overlay.querySelector("#willkarte-filter");
+  const filterBtn = overlay.querySelector("#willkarte-filter-btn");
+  const filterMenu = overlay.querySelector("#willkarte-filter-menu");
+  const availFrom = overlay.querySelector("#willkarte-avail-from"); // earliest month
+  const availDate = overlay.querySelector("#willkarte-avail-date"); // latest month ("to")
+  const availStatus = overlay.querySelector("#willkarte-avail-status");
+  // Fill both month dropdowns: a blank "—" (off) then the current month + 23 ahead.
+  // Option value is "yyyy-mm"; the label is a German "Monat JJJJ".
+  (function fillMonthSelects() {
+    const MONTHS = ["Jänner", "Februar", "März", "April", "Mai", "Juni",
+      "Juli", "August", "September", "Oktober", "November", "Dezember"];
+    const now = new Date();
+    let html = '<option value="">—</option>';
+    for (let i = 0; i < 24; i++) {
+      const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+      const val = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+      html += '<option value="' + val + '">' + MONTHS[d.getMonth()] + " " + d.getFullYear() + "</option>";
+    }
+    availFrom.innerHTML = html;
+    availDate.innerHTML = html;
+  })();
+
+  let filterMenuOpen = false;
+  function openFilterMenu() {
+    closeMenu(); // only one dropdown open at a time
+    filterMenuOpen = true;
+    filterMenu.hidden = false;
+    filterBtn.setAttribute("aria-expanded", "true");
+  }
+  function closeFilterMenu() {
+    filterMenuOpen = false;
+    filterMenu.hidden = true;
+    filterBtn.setAttribute("aria-expanded", "false");
+  }
+  filterBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    filterMenuOpen ? closeFilterMenu() : openFilterMenu();
+  });
+
+  // ---- One shared close mechanism for BOTH dropdowns --------------------
+  // Anything that isn't inside the currently-open menu (its own wrapper) closes it:
+  //   • a click anywhere else in the page / overlay (bubbles to document)
+  //   • Escape
+  //   • a click inside the map iframe — which does NOT reach this document (the
+  //     iframe swallows it), so we also listen for the window `blur` that fires when
+  //     focus moves into the iframe.
+  function closeAllMenus() {
+    if (menuOpen) closeMenu();
+    if (filterMenuOpen) closeFilterMenu();
+  }
   document.addEventListener("click", (e) => {
     if (menuOpen && !viewWrap.contains(e.target)) closeMenu();
+    if (filterMenuOpen && !filterWrap.contains(e.target)) closeFilterMenu();
+  });
+  window.addEventListener("blur", () => {
+    // Focus left the top document — typically because a click landed in the map
+    // iframe. Close whatever menu is open.
+    if (menuOpen || filterMenuOpen) closeAllMenus();
   });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && menuOpen) {
-      // Both this and the map's close handler live on `document`; stopImmediate
-      // keeps Escape from also closing the whole map when only the menu is open.
+    if (e.key === "Escape" && (menuOpen || filterMenuOpen)) {
+      // This and the map's own Escape handler both live on `document`; stopImmediate
+      // keeps Escape from also closing the whole map when only a menu is open.
       e.stopImmediatePropagation();
-      closeMenu();
+      closeAllMenus();
     }
   });
-  refreshViewMenu();
+
+  // Throttled sweep: fetch every loaded ad's detail page so its date is known.
+  // `sweepGen` cancels an in-flight sweep when the filter clears or a new load
+  // starts; a sweep is (re)kicked whenever the filter is active and new listings
+  // have streamed in.
+  const SWEEP_CONCURRENCY = 5;
+  let sweepGen = 0;
+  let sweepingGen = -1; // which gen's sweep loop is currently running (-1 = none)
+  function updateAvailStatus() {
+    if (!availFilterOn()) {
+      availStatus.hidden = true;
+      return;
+    }
+    const done = current.filter((l) => detailCache.has(l.id) && detailCache.get(l.id) !== "pending").length;
+    availStatus.hidden = false;
+    availStatus.textContent =
+      done >= current.length
+        ? "Alle " + current.length + " Daten geladen"
+        : "Lade Daten… " + done + " / " + current.length;
+  }
+  // Tell the map whether a date sweep is in progress. While active the map holds
+  // its markers still (so popups don't get destroyed mid-open); on inactive it
+  // applies the filter in one pass. Idempotent-ish — cheap to send.
+  function sendLoading(active) {
+    post({ type: "willkarte:loading", active: !!active });
+  }
+  async function runSweep(gen) {
+    sweepingGen = gen;
+    sendLoading(true);
+    renderCount(); // counter → "Filter lädt …"
+    try {
+      while (gen === sweepGen) {
+        // Re-scan `current` each round so pages that streamed in mid-sweep are
+        // picked up. detailCache dedupes, so already-fetched ads are skipped.
+        const pending = current.filter((l) => l.url && !detailCache.has(l.id));
+        if (!pending.length) break;
+        const batch = pending.slice(0, SWEEP_CONCURRENCY);
+        await Promise.all(batch.map((l) => fetchDetail(l.id, l.url)));
+        updateAvailStatus();
+      }
+    } finally {
+      if (sweepingGen === gen) sweepingGen = -1;
+      if (gen === sweepGen) {
+        updateAvailStatus();
+        sendLoading(false); // sweep for the current gen finished → unfreeze + filter
+        renderCount(); // counter → "N ausgeblendet"
+      }
+    }
+  }
+  // Start a sweep for the current gen unless one is already running for it. When
+  // applyAvailFilter/startLoading bumped sweepGen, any old loop exits on its next
+  // check and this starts the fresh one.
+  function kickSweep() {
+    if (!availFilterOn()) return;
+    if (sweepingGen === sweepGen) return; // already sweeping the current gen
+    runSweep(sweepGen);
+  }
+  function sendAvailFilter() {
+    post({ type: "willkarte:availfilter", from: availFilterFrom, to: availFilterTo });
+  }
+  // Read both month dropdowns (value "yyyy-mm" or "" = off) and (re)apply.
+  function applyAvailFilter() {
+    availFilterFrom = availFrom.value || null;
+    availFilterTo = availDate.value || null;
+    refreshFilterBtn();
+    sweepGen++; // cancel any running sweep
+    if (!availFilterOn()) sendLoading(false); // clearing: unfreeze the map now
+    sendAvailFilter();
+    updateAvailStatus();
+    renderCount();
+    kickSweep(); // no-op if the filter was just cleared
+  }
+  availFrom.addEventListener("change", applyAvailFilter);
+  availDate.addEventListener("change", applyAvailFilter);
+
+  // ---- "Veröffentlicht / geändert" filter -------------------------------
+  // ONE slider, fixed non-linear stops — cheap (PUBLISHED is in the search JSON, so
+  // no fetch and no map freeze). Each stop is mutually exclusive and is either a
+  // day-window (`days`) or "seit letztem Besuch" (`visit`). Both map to the same
+  // message `willkarte:pubfilter` {maxAgeDays, sinceTs}: a day stop sets maxAgeDays,
+  // the visit stop sets sinceTs (the prior-page-load baseline) — never both.
+  const pubRange = overlay.querySelector("#willkarte-pub-range");
+  const pubVal = overlay.querySelector("#willkarte-pub-val");
+  const PUB_STOPS = [
+    { label: "Alle" }, // off
+    { visit: true, label: "Letzter Besuch" },
+    { days: 1, label: "Heute" },
+    { days: 2, label: "2 Tage" },
+    { days: 3, label: "3 Tage" },
+    { days: 7, label: "7 Tage" },
+    { days: 14, label: "14 Tage" },
+    { days: 30, label: "30 Tage" },
+  ];
+  let pubMaxAgeDays = 0; // 0 = no age limit
+  let pubNewOnly = false; // "seit letztem Besuch" stop selected
+
+  function refreshFilterBtn() {
+    // The "Filter" button reads as active if ANY filter is on.
+    const on = availFilterOn() || pubMaxAgeDays > 0 || pubNewOnly || floorSel.size > 0;
+    filterBtn.classList.toggle("is-filtered", on);
+  }
+  function sendPubFilter() {
+    post({
+      type: "willkarte:pubfilter",
+      maxAgeDays: pubMaxAgeDays,
+      sinceTs: pubNewOnly ? prevVisitTs : null,
+    });
+  }
+  pubRange.addEventListener("input", () => {
+    const stop = PUB_STOPS[Number(pubRange.value)] || PUB_STOPS[0];
+    pubMaxAgeDays = stop.days || 0;
+    pubNewOnly = !!stop.visit;
+    pubVal.textContent = stop.label;
+    refreshFilterBtn();
+    sendPubFilter();
+    renderCount();
+  });
+
+  // ---- Stockwerk (floor) filter -----------------------------------------
+  // Multi-select chips. Empty set = off (show all floors). Sends the selected keys
+  // to the map, which maps each listing's FLOOR to a key and hides the mismatches.
+  // Cheap: FLOOR is in the search JSON (no fetch/freeze).
+  const floorChips = overlay.querySelectorAll(".willkarte-floor-chip[data-floor]");
+  const floorSel = new Set(); // selected keys: eg / 1 / 2 / 3 / 4plus / dg
+  function sendFloorFilter() {
+    post({ type: "willkarte:floorfilter", floors: [...floorSel] });
+  }
+  for (const chip of floorChips) {
+    chip.addEventListener("click", () => {
+      const k = chip.dataset.floor;
+      if (floorSel.has(k)) floorSel.delete(k);
+      else floorSel.add(k);
+      chip.classList.toggle("is-on", floorSel.has(k));
+      chip.setAttribute("aria-checked", String(floorSel.has(k)));
+      refreshFilterBtn();
+      sendFloorFilter();
+      renderCount();
+    });
+  }
 
   toggle.addEventListener("click", openMap);
   overlay.querySelector("#willkarte-close").addEventListener("click", (e) => {
@@ -438,12 +736,33 @@
     if (overlay.classList.contains("willkarte-open")) hideMap();
   });
 
-  function setCount(loaded) {
-    setPillMax(loaded);
-    const capped = loaded >= MAX_LISTINGS && total && total > MAX_LISTINGS;
-    overlay.querySelector("#willkarte-count").textContent =
-      loaded + (total ? " / " + total : "") + " Inserate" +
+  // The top-left counter. Base = "N / total Inserate". When any extra filter is on
+  // it also shows how many are ruled out (reported by the map, which owns the
+  // filtering), e.g. "· 12 ausgeblendet". While the availability sweep runs it
+  // reads "· Filter lädt … (K ausgeblendet)".
+  let lastLoaded = 0;
+  let filterHidden = 0; // flats hidden by ANY extra filter (from the map)
+  function anyFilterOn() {
+    return availFilterOn() || pubMaxAgeDays > 0 || pubNewOnly || floorSel.size > 0;
+  }
+  function renderCount() {
+    const capped = lastLoaded >= MAX_LISTINGS && total && total > MAX_LISTINGS;
+    let txt =
+      lastLoaded + (total ? " / " + total : "") + " Inserate" +
       (capped ? " (Limit " + MAX_LISTINGS + ")" : "");
+    if (anyFilterOn()) {
+      // The availability sweep is the only slow part; show its progress while it runs.
+      const availLoading = availFilterOn() && sweepingGen === sweepGen;
+      txt += availLoading
+        ? " · Filter lädt … (" + filterHidden + " ausgeblendet)"
+        : " · " + filterHidden + " ausgeblendet";
+    }
+    overlay.querySelector("#willkarte-count").textContent = txt;
+  }
+  function setCount(loaded) {
+    lastLoaded = loaded;
+    setPillMax(loaded);
+    renderCount();
   }
 
   // ---- Messaging with the map iframe ------------------------------------
@@ -464,10 +783,17 @@
       sendSaved();
       sendHidden();
       sendView();
+      sendAvailFilter();
+      sendPubFilter();
+      sendFloorFilter();
     }
     if (d?.type === "willkarte:save") setSaved(d.id, d.save);
     if (d?.type === "willkarte:hide") setHidden(d.id, d.hide);
     if (d?.type === "willkarte:fetchDetail") fetchDetail(d.id, d.url);
+    if (d?.type === "willkarte:availcount") {
+      filterHidden = d.hidden || 0;
+      renderCount();
+    }
   });
 
   // Availability ("verfügbar ab") lives ONLY on the ad's detail page, not in the
@@ -518,6 +844,8 @@
     current = [];
     byId = new Map();
     total = null;
+    sweepGen++; // stop the old sweep; loadAll's kickSweep restarts it if filtering
+    updateAvailStatus();
     loadAll(gen);
     loadSaved(); // the Merkliste may have changed since the last open
     loadHidden(); // hidden list may have changed in another tab
@@ -554,6 +882,7 @@
       current = [...byId.values()];
       if (iframeReady) sendListings();
       setCount(current.length);
+      kickSweep(); // if the date filter is on, fetch the new page's dates too
 
       // Fewer results than the first page means we've reached the end.
       if (pageListings.length < pageSize) break;
